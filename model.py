@@ -1,9 +1,11 @@
 from torchtools import *
 from collections import OrderedDict
 import math
-#import seaborn as sns
+# import seaborn as sns
 import numpy as np
 import matplotlib.pyplot as plt
+
+from torchtools.tt import GraphConvolution
 
 
 class ConvBlock(nn.Module):
@@ -27,6 +29,7 @@ class ConvBlock(nn.Module):
     def forward(self, x):
         out = self.layers(x)
         return out
+
 
 class ConvNet(nn.Module):
     def __init__(self, opt, momentum=0.1, affine=True, track_running_stats=True):
@@ -63,7 +66,6 @@ class ConvNet(nn.Module):
         out = self.conv_blocks(x)
         out = out.view(out.size(0),-1)
         return out
-
 
 
 # encoder for imagenet dataset
@@ -110,15 +112,44 @@ class EmbeddingImagenet(nn.Module):
                                     nn.MaxPool2d(kernel_size=2),
                                     nn.LeakyReLU(negative_slope=0.2, inplace=True),
                                     nn.Dropout2d(0.5))
-        self.layer_last = nn.Sequential(nn.Linear(in_features=self.last_hidden * 4,
-                                              out_features=self.emb_size, bias=True),
-                                        nn.BatchNorm1d(self.emb_size))
+        # self.layer_last = nn.Sequential(nn.Linear(in_features=self.last_hidden * 4,
+        #                                       out_features=self.emb_size, bias=True),
+        #                                 nn.BatchNorm1d(self.emb_size))
 
-    def forward(self, input_data):
-        output_data = self.conv_4(self.conv_3(self.conv_2(self.conv_1(input_data))))
-        return self.layer_last(output_data.view(output_data.size(0), -1))
+        self.gc_1 = GraphConvolution(self.hidden * 4, self.hidden * 4)
+        # self.gc_2 = GraphConvolution(self.hidden * 4, self.hidden * 4)
 
+        self.conv_5 = nn.Sequential(nn.Conv2d(in_channels=self.hidden*4,  # 256
+                                              out_channels=self.hidden,  # 64
+                                              kernel_size=1,
+                                              bias=False),
+                                    nn.BatchNorm1d(num_features=self.hidden),
+                                    nn.LeakyReLU(negative_slope=0.2, inplace=True))
+        self.conv_6 = nn.Sequential(nn.Conv2d(in_channels=self.hidden,  # 64
+                                              out_channels=self.hidden // 4,  # 16
+                                              kernel_size=1,
+                                              bias=False),
+                                    nn.BatchNorm2d(num_features=self.hidden//4),
+                                    nn.LeakyReLU(negative_slope=0.2, inplace=True))
+        self.conv_7 = nn.Sequential(nn.Conv2d(in_channels=self.hidden // 4,  # 16
+                                              out_channels=1,  # 1
+                                              kernel_size=1,
+                                              bias=False))
+        # nn.BatchNorm2d(num_features=self.hidden/64),
+        # nn.LeakyReLU(negative_slope=0.2, inplace=True))
 
+    def forward(self, input_data, adj):
+        # input data: num_samples x 3 x 84 x 84
+        # adj: num_samples x num_samples
+        output_data = self.conv_4(self.conv_3(self.conv_2(self.conv_1(input_data))))  # num_samples * 256 * 5 * 5
+        output_data_1 = self.pool_1(output_data)  # num_samples * 256 * 1 * 1
+        output_data_2 = F.normalize(output_data_1.view(output_data_1.size(0), -1), p=1, dim=1)
+        output_data_3 = F.relu(self.gc_1(output_data_2, adj))  # num_samples * 256
+        output_data = output_data * output_data_3.unsqueeze(-1).unsqueeze(-1).repeat(
+            1, 1, output_data.size(2), output_data.size(3))
+        output_data = self.conv_7(self.conv_6(self.conv_5(output_data))).squeeze(1)
+
+        return output_data  # num_samples * 5 * 5
 
 
 class NodeUpdateNetwork(nn.Module):
@@ -137,13 +168,13 @@ class NodeUpdateNetwork(nn.Module):
         layer_list = OrderedDict()
         for l in range(len(self.num_features_list)):
 
+            # 实际上是两个一维卷积层
             layer_list['conv{}'.format(l)] = nn.Conv2d(
                 in_channels=self.num_features_list[l - 1] if l > 0 else self.in_features * 3,
                 out_channels=self.num_features_list[l],
                 kernel_size=1,
                 bias=False)
-            layer_list['norm{}'.format(l)] = nn.BatchNorm2d(num_features=self.num_features_list[l],
-                                                            )
+            layer_list['norm{}'.format(l)] = nn.BatchNorm2d(num_features=self.num_features_list[l])
             layer_list['relu{}'.format(l)] = nn.LeakyReLU()
 
             if self.dropout > 0 and l == (len(self.num_features_list) - 1):
@@ -152,6 +183,9 @@ class NodeUpdateNetwork(nn.Module):
         self.network = nn.Sequential(layer_list)
 
     def forward(self, node_feat, edge_feat):
+        # node_feat: batch_size(num_tasks) x node_size(num_data) x in_features
+        # edge_feat: batch_size(num_tasks) x 2 x node_size(num_data) x node_size(num_data)
+
         # get size
         num_tasks = node_feat.size(0)
         num_data = node_feat.size(1)
@@ -160,14 +194,18 @@ class NodeUpdateNetwork(nn.Module):
         diag_mask = 1.0 - torch.eye(num_data).unsqueeze(0).unsqueeze(0).repeat(num_tasks, 2, 1, 1).to(tt.arg.device)
 
         # set diagonal as zero and normalize
+        # batch_size x 2 x node_size x node_size
         edge_feat = F.normalize(edge_feat * diag_mask, p=1, dim=-1)
 
         # compute attention and aggregate
+        # batch_size x 2*node_size x in_features
         aggr_feat = torch.bmm(torch.cat(torch.split(edge_feat, 1, 1), 2).squeeze(1), node_feat)
 
+        # batch_size x 3*in_features x node_size
         node_feat = torch.cat([node_feat, torch.cat(aggr_feat.split(num_data, 1), -1)], -1).transpose(1, 2)
 
         # non-linear transform
+        # batch_size x node_size x num_features
         node_feat = self.network(node_feat.unsqueeze(-1)).transpose(1, 2).squeeze(-1)
         return node_feat
 
@@ -228,6 +266,9 @@ class EdgeUpdateNetwork(nn.Module):
             self.dsim_network = nn.Sequential(layer_list)
 
     def forward(self, node_feat, edge_feat):
+        # node_feat: batch_size x num_samples(node_size) x feat_size
+        # edge_feat: batch_size x 2 x num_samples(node_size) x num_samples(node_size)
+
         # compute abs(x_i, x_j)
         x_i = node_feat.unsqueeze(2)
         x_j = torch.transpose(x_i, 1, 2)
@@ -235,6 +276,7 @@ class EdgeUpdateNetwork(nn.Module):
         x_ij = torch.transpose(x_ij, 1, 3)
 
         # compute similarity/dissimilarity (batch_size x feat_size x num_samples x num_samples)
+        # batch_size x 1 x num_samples x num_samples
         sim_val = F.sigmoid(self.sim_network(x_ij))
 
         if self.separate_dissimilarity:
@@ -242,14 +284,21 @@ class EdgeUpdateNetwork(nn.Module):
         else:
             dsim_val = 1.0 - sim_val
 
-
+        # batch_size x 2 x num_samples x num_samples
         diag_mask = 1.0 - torch.eye(node_feat.size(1)).unsqueeze(0).unsqueeze(0).repeat(node_feat.size(0), 2, 1, 1).to(tt.arg.device)
         edge_feat = edge_feat * diag_mask
+
+        # batch_size x 2 x num_samples x 1
         merge_sum = torch.sum(edge_feat, -1, True)
-        # set diagonal as zero and normalize
+
+        # batch_size x 2 x num_samples x num_samples
         edge_feat = F.normalize(torch.cat([sim_val, dsim_val], 1) * edge_feat, p=1, dim=-1) * merge_sum
+
+        # 将自旋边的特征加回来
+        # batch_size x 2 x num_samples x num_samples
         force_edge_feat = torch.cat((torch.eye(node_feat.size(1)).unsqueeze(0), torch.zeros(node_feat.size(1), node_feat.size(1)).unsqueeze(0)), 0).unsqueeze(0).repeat(node_feat.size(0), 1, 1, 1).to(tt.arg.device)
         edge_feat = edge_feat + force_edge_feat
+
         edge_feat = edge_feat + 1e-6
         edge_feat = edge_feat / torch.sum(edge_feat, dim=1).unsqueeze(1).repeat(1, 2, 1, 1)
 
@@ -265,11 +314,11 @@ class GraphNetwork(nn.Module):
                  dropout=0.0):
         super(GraphNetwork, self).__init__()
         # set size
-        self.in_features = in_features
-        self.node_features = node_features
-        self.edge_features = edge_features
-        self.num_layers = num_layers
-        self.dropout = dropout
+        self.in_features = in_features  # 128
+        self.node_features = node_features  # 96
+        self.edge_features = edge_features  # 96
+        self.num_layers = num_layers  # 3
+        self.dropout = dropout  # 0.1 or 0
 
         # for each layer
         for l in range(self.num_layers):
@@ -290,6 +339,7 @@ class GraphNetwork(nn.Module):
     # forward
     def forward(self, node_feat, edge_feat):
         # for each layer
+        # 后面要计算损失
         edge_feat_list = []
         for l in range(self.num_layers):
             # (1) edge to node
@@ -303,9 +353,9 @@ class GraphNetwork(nn.Module):
 
         # if tt.arg.visualization:
         #     for l in range(self.num_layers):
-        #         ax = sns.heatmap(tt.nvar(edge_feat_list[l][0, 0, :, :]), xticklabels=False, yticklabels=False, linewidth=0.1,  cmap="coolwarm",  cbar=False, square=True)
+        #         ax = sns.heatmap(tt.nvar(edge_feat_list[l][0, 0, :, :]), xticklabels=False, yticklabels=False,
+        #         linewidth=0.1,  cmap="coolwarm",  cbar=False, square=True)
         #         ax.get_figure().savefig('./visualization/edge_feat_layer{}.png'.format(l))
-
 
         return edge_feat_list
 

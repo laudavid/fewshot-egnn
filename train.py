@@ -4,7 +4,23 @@ from model import EmbeddingImagenet, GraphNetwork, ConvNet
 import shutil
 import os
 import random
-#import seaborn as sns
+
+# import seaborn as sns
+
+
+def normalize(adj, symmetric=True):
+    # A = A+I
+    new_adj = adj + torch.eye(adj.size(0))
+    # 所有节点的度
+    degree = new_adj.sum(1)
+    if symmetric:
+        # degree = degree^-1/2
+        degree = torch.diag(torch.pow(degree, -0.5))
+        return degree.mm(new_adj).mm(degree)
+    else:
+        # degree=degree^-1
+        degree = torch.diag(torch.pow(degree, -1))
+        return degree.mm(new_adj)
 
 
 class ModelTrainer(object):
@@ -20,7 +36,6 @@ class ModelTrainer(object):
             print('Construct multi-gpu model ...')
             self.enc_module = nn.DataParallel(self.enc_module, device_ids=[0, 1, 2, 3], dim=0)
             self.gnn_module = nn.DataParallel(self.gnn_module, device_ids=[0, 1, 2, 3], dim=0)
-
             print('done!\n')
 
         # get data loader
@@ -50,11 +65,15 @@ class ModelTrainer(object):
         num_supports = tt.arg.num_ways_train * tt.arg.num_shots_train
         num_queries = tt.arg.num_ways_train * 1
         num_samples = num_supports + num_queries
+
+        # batch_size * num_samples * num_samples
         support_edge_mask = torch.zeros(tt.arg.meta_batch_size, num_samples, num_samples).to(tt.arg.device)
         support_edge_mask[:, :num_supports, :num_supports] = 1
         query_edge_mask = 1 - support_edge_mask
 
+        # batch_size * num_samples * num_samples
         evaluation_mask = torch.ones(tt.arg.meta_batch_size, num_samples, num_samples).to(tt.arg.device)
+
         # for semi-supervised setting, ignore unlabeled support sets for evaluation
         for c in range(tt.arg.num_ways_train):
             evaluation_mask[:,
@@ -72,6 +91,7 @@ class ModelTrainer(object):
             self.global_step = iter
 
             # load task data list
+            # num_tasks(batch_size) x (num_ways * (num_supports | num_queries)) x 3 x 84 x 84
             [support_data,
              support_label,
              query_data,
@@ -83,10 +103,14 @@ class ModelTrainer(object):
             # set as single data
             full_data = torch.cat([support_data, query_data], 1)
             full_label = torch.cat([support_label, query_label], 1)
+
+            # 包含了所有边的特征
+            # batch_size x 2 x num_samples x num_samples
             full_edge = self.label2edge(full_label)
 
             # set init edge
-            init_edge = full_edge.clone()  # batch_size x 2 x num_samples x num_samples
+            # batch_size x 2 x num_samples x num_samples
+            init_edge = full_edge.clone()
             init_edge[:, :, num_supports:, :] = 0.5
             init_edge[:, :, :, num_supports:] = 0.5
             for i in range(num_queries):
@@ -95,66 +119,107 @@ class ModelTrainer(object):
 
             # for semi-supervised setting,
             for c in range(tt.arg.num_ways_train):
-                init_edge[:, :, ((c+1) * tt.arg.num_shots_train - tt.arg.num_unlabeled):(c+1) * tt.arg.num_shots_train, :num_supports] = 0.5
-                init_edge[:, :, :num_supports, ((c+1) * tt.arg.num_shots_train - tt.arg.num_unlabeled):(c+1) * tt.arg.num_shots_train] = 0.5
+                init_edge[:, :,
+                ((c + 1) * tt.arg.num_shots_train - tt.arg.num_unlabeled):(c + 1) * tt.arg.num_shots_train,
+                :num_supports] = 0.5
+                init_edge[:, :, :num_supports,
+                ((c + 1) * tt.arg.num_shots_train - tt.arg.num_unlabeled):(c + 1) * tt.arg.num_shots_train] = 0.5
 
             # set as train mode
             self.enc_module.train()
             self.gnn_module.train()
 
             # (1) encode data
-            full_data = [self.enc_module(data.squeeze(1)) for data in full_data.chunk(full_data.size(1), dim=1)]
-            full_data = torch.stack(full_data, dim=1) # batch_size x num_samples x featdim
+            # enc_module input data.squeeze(1): num_samples x 3 x 84 x 84
+            # full_data = [self.enc_module(data.squeeze(1)) for data in full_data.chunk(full_data.size(1), dim=1)]
+            data_list = []
+            for i, data in enumerate(full_data.chunk(full_data.size(0), dim=0)):
+                adj = normalize(init_edge[i][0])
+                data_list.append(self.enc_module(data.squeeze(0), adj))
+
+            # batch_size x num_samples x featdim(node_feat_size: 5 x 5)
+            full_data = torch.stack(data_list, dim=0)
 
             # (2) predict edge logit (consider only the last layer logit, num_tasks x 2 x num_samples x num_samples)
             if tt.arg.train_transductive:
                 full_logit_layers = self.gnn_module(node_feat=full_data, edge_feat=init_edge)
             else:
-                evaluation_mask[:, num_supports:, num_supports:] = 0 # ignore query-query edges, since it is non-transductive setting
+                # ignore query-query edges, since it is non-transductive setting
+                evaluation_mask[:, num_supports:, num_supports:] = 0
                 # input_node_feat: (batch_size x num_queries) x (num_support + 1) x featdim
                 # input_edge_feat: (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
-                support_data = full_data[:, :num_supports] # batch_size x num_support x featdim
-                query_data = full_data[:, num_supports:] # batch_size x num_query x featdim
-                support_data_tiled = support_data.unsqueeze(1).repeat(1, num_queries, 1, 1) # batch_size x num_queries x num_support x featdim
-                support_data_tiled = support_data_tiled.view(tt.arg.meta_batch_size * num_queries, num_supports, -1) # (batch_size x num_queries) x num_support x featdim
-                query_data_reshaped = query_data.contiguous().view(tt.arg.meta_batch_size * num_queries, -1).unsqueeze(1) # (batch_size x num_queries) x 1 x featdim
-                input_node_feat = torch.cat([support_data_tiled, query_data_reshaped], 1) # (batch_size x num_queries) x (num_support + 1) x featdim
+                support_data = full_data[:, :num_supports]  # batch_size x num_support x featdim
+                query_data = full_data[:, num_supports:]  # batch_size x num_query x featdim
+                # batch_size x num_queries x num_support x featdim
+                support_data_tiled = support_data.unsqueeze(1).repeat(1, num_queries, 1, 1)
+                # (batch_size x num_queries) x num_support x featdim
+                support_data_tiled = support_data_tiled.view(tt.arg.meta_batch_size * num_queries, num_supports, -1)
+                # (batch_size x num_queries) x 1 x featdim
+                query_data_reshaped = query_data.contiguous().view(tt.arg.meta_batch_size * num_queries, -1).unsqueeze(1)
+                # (batch_size x num_queries) x (num_support + 1) x featdim
+                input_node_feat = torch.cat([support_data_tiled, query_data_reshaped], 1)
 
-                input_edge_feat = 0.5 * torch.ones(tt.arg.meta_batch_size, 2, num_supports + 1, num_supports + 1).to(tt.arg.device) # batch_size x 2 x (num_support + 1) x (num_support + 1)
-
-                input_edge_feat[:, :, :num_supports, :num_supports] = init_edge[:, :, :num_supports, :num_supports] # batch_size x 2 x (num_support + 1) x (num_support + 1)
-                input_edge_feat = input_edge_feat.repeat(num_queries, 1, 1, 1) #(batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
+                # batch_size x 2 x (num_support + 1) x (num_support + 1)
+                input_edge_feat = 0.5 * torch.ones(tt.arg.meta_batch_size, 2, num_supports + 1, num_supports + 1).to(
+                    tt.arg.device)
+                # batch_size x 2 x (num_support + 1) x (num_support + 1)
+                input_edge_feat[:, :, :num_supports, :num_supports] = init_edge[:, :, :num_supports, :num_supports]
+                # (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
+                input_edge_feat = input_edge_feat.repeat(num_queries, 1, 1, 1)
 
                 # logit: (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
                 logit_layers = self.gnn_module(node_feat=input_node_feat, edge_feat=input_edge_feat)
 
-                logit_layers = [logit_layer.view(tt.arg.meta_batch_size, num_queries, 2, num_supports + 1, num_supports + 1) for logit_layer in logit_layers]
+                logit_layers = [
+                    logit_layer.view(tt.arg.meta_batch_size, num_queries, 2, num_supports + 1, num_supports + 1) for
+                    logit_layer in logit_layers]
 
                 # logit --> full_logit (batch_size x 2 x num_samples x num_samples)
                 full_logit_layers = []
                 for l in range(tt.arg.num_layers):
-                    full_logit_layers.append(torch.zeros(tt.arg.meta_batch_size, 2, num_samples, num_samples).to(tt.arg.device))
+                    full_logit_layers.append(
+                        torch.zeros(tt.arg.meta_batch_size, 2, num_samples, num_samples).to(tt.arg.device))
 
                 for l in range(tt.arg.num_layers):
-                    full_logit_layers[l][:, :, :num_supports, :num_supports] = logit_layers[l][:, :, :, :num_supports, :num_supports].mean(1)
-                    full_logit_layers[l][:, :, :num_supports, num_supports:] = logit_layers[l][:, :, :, :num_supports, -1].transpose(1, 2).transpose(2, 3)
-                    full_logit_layers[l][:, :, num_supports:, :num_supports] = logit_layers[l][:, :, :, -1, :num_supports].transpose(1, 2)
+                    full_logit_layers[l][:, :, :num_supports, :num_supports] = logit_layers[l][:, :, :, :num_supports,
+                                                                               :num_supports].mean(1)
+                    full_logit_layers[l][:, :, :num_supports, num_supports:] = logit_layers[l][:, :, :, :num_supports,
+                                                                               -1].transpose(1, 2).transpose(2, 3)
+                    full_logit_layers[l][:, :, num_supports:, :num_supports] = logit_layers[l][:, :, :, -1,
+                                                                               :num_supports].transpose(1, 2)
+                    # batch_size x 2 x num_queries x num_supports
 
             # (4) compute loss
-            full_edge_loss_layers = [self.edge_loss((1-full_logit_layer[:, 0]), (1-full_edge[:, 0])) for full_logit_layer in full_logit_layers]
+            full_edge_loss_layers = [self.edge_loss((1 - full_logit_layer[:, 0]), (1 - full_edge[:, 0])) for
+                                     full_logit_layer in full_logit_layers]
 
             # weighted edge loss for balancing pos/neg
-            pos_query_edge_loss_layers = [torch.sum(full_edge_loss_layer * query_edge_mask * full_edge[:, 0] * evaluation_mask) / torch.sum(query_edge_mask * full_edge[:, 0] * evaluation_mask) for full_edge_loss_layer in full_edge_loss_layers]
-            neg_query_edge_loss_layers = [torch.sum(full_edge_loss_layer * query_edge_mask * (1-full_edge[:, 0]) * evaluation_mask) / torch.sum(query_edge_mask * (1-full_edge[:, 0]) * evaluation_mask) for full_edge_loss_layer in full_edge_loss_layers]
-            query_edge_loss_layers = [pos_query_edge_loss_layer + neg_query_edge_loss_layer for (pos_query_edge_loss_layer, neg_query_edge_loss_layer) in zip(pos_query_edge_loss_layers, neg_query_edge_loss_layers)]
+            pos_query_edge_loss_layers = [
+                torch.sum(full_edge_loss_layer * query_edge_mask * full_edge[:, 0] * evaluation_mask) / torch.sum(
+                    query_edge_mask * full_edge[:, 0] * evaluation_mask) for full_edge_loss_layer in
+                full_edge_loss_layers]
+            neg_query_edge_loss_layers = [
+                torch.sum(full_edge_loss_layer * query_edge_mask * (1 - full_edge[:, 0]) * evaluation_mask) / torch.sum(
+                    query_edge_mask * (1 - full_edge[:, 0]) * evaluation_mask) for full_edge_loss_layer in
+                full_edge_loss_layers]
+            query_edge_loss_layers = [pos_query_edge_loss_layer + neg_query_edge_loss_layer for
+                                      (pos_query_edge_loss_layer, neg_query_edge_loss_layer) in
+                                      zip(pos_query_edge_loss_layers, neg_query_edge_loss_layers)]
 
             # compute accuracy
-            full_edge_accr_layers = [self.hit(full_logit_layer, 1-full_edge[:, 0].long()) for full_logit_layer in full_logit_layers]
-            query_edge_accr_layers = [torch.sum(full_edge_accr_layer * query_edge_mask * evaluation_mask) / torch.sum(query_edge_mask * evaluation_mask) for full_edge_accr_layer in full_edge_accr_layers]
+            full_edge_accr_layers = [self.hit(full_logit_layer, 1 - full_edge[:, 0].long()) for full_logit_layer in
+                                     full_logit_layers]
+            query_edge_accr_layers = [torch.sum(full_edge_accr_layer * query_edge_mask * evaluation_mask) / torch.sum(
+                query_edge_mask * evaluation_mask) for full_edge_accr_layer in full_edge_accr_layers]
 
             # compute node loss & accuracy (num_tasks x num_quries x num_ways)
-            query_node_pred_layers = [torch.bmm(full_logit_layer[:, 0, num_supports:, :num_supports], self.one_hot_encode(tt.arg.num_ways_train, support_label.long())) for full_logit_layer in full_logit_layers] # (num_tasks x num_quries x num_supports) * (num_tasks x num_supports x num_ways)
-            query_node_accr_layers = [torch.eq(torch.max(query_node_pred_layer, -1)[1], query_label.long()).float().mean() for query_node_pred_layer in query_node_pred_layers]
+            query_node_pred_layers = [torch.bmm(full_logit_layer[:, 0, num_supports:, :num_supports],
+                                                self.one_hot_encode(tt.arg.num_ways_train, support_label.long())) for
+                                      full_logit_layer in
+                                      full_logit_layers]  # (num_tasks x num_quries x num_supports) * (num_tasks x num_supports x num_ways)
+            query_node_accr_layers = [
+                torch.eq(torch.max(query_node_pred_layer, -1)[1], query_label.long()).float().mean() for
+                query_node_pred_layer in query_node_pred_layers]
 
             total_loss_layers = query_edge_loss_layers
 
@@ -197,7 +262,7 @@ class ModelTrainer(object):
                     'gnn_module_state_dict': self.gnn_module.state_dict(),
                     'val_acc': val_acc,
                     'optimizer': self.optimizer.state_dict(),
-                    }, is_best)
+                }, is_best)
 
             tt.log_step(global_step=self.global_step)
 
@@ -224,7 +289,7 @@ class ModelTrainer(object):
         query_node_accrs = []
 
         # for each iteration
-        for iter in range(tt.arg.test_iteration//tt.arg.test_batch_size):
+        for iter in range(tt.arg.test_iteration // tt.arg.test_batch_size):
             # load task data list
             [support_data,
              support_label,
@@ -249,8 +314,11 @@ class ModelTrainer(object):
 
             # for semi-supervised setting,
             for c in range(tt.arg.num_ways_test):
-                init_edge[:, :, ((c+1) * tt.arg.num_shots_test - tt.arg.num_unlabeled):(c+1) * tt.arg.num_shots_test, :num_supports] = 0.5
-                init_edge[:, :, :num_supports, ((c+1) * tt.arg.num_shots_test - tt.arg.num_unlabeled):(c+1) * tt.arg.num_shots_test] = 0.5
+                init_edge[:, :,
+                ((c + 1) * tt.arg.num_shots_test - tt.arg.num_unlabeled):(c + 1) * tt.arg.num_shots_test,
+                :num_supports] = 0.5
+                init_edge[:, :, :num_supports,
+                ((c + 1) * tt.arg.num_shots_test - tt.arg.num_unlabeled):(c + 1) * tt.arg.num_shots_test] = 0.5
 
             # set as train mode
             self.enc_module.eval()
@@ -265,23 +333,31 @@ class ModelTrainer(object):
                 full_logit_all = self.gnn_module(node_feat=full_data, edge_feat=init_edge)
                 full_logit = full_logit_all[-1]
             else:
-                evaluation_mask[:, num_supports:, num_supports:] = 0  # ignore query-query edges, since it is non-transductive setting
+                evaluation_mask[:, num_supports:,
+                num_supports:] = 0  # ignore query-query edges, since it is non-transductive setting
 
                 full_logit = torch.zeros(tt.arg.test_batch_size, 2, num_samples, num_samples).to(tt.arg.device)
 
                 # input_node_feat: (batch_size x num_queries) x (num_support + 1) x featdim
                 # input_edge_feat: (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
-                support_data = full_data[:, :num_supports] # batch_size x num_support x featdim
-                query_data = full_data[:, num_supports:] # batch_size x num_query x featdim
-                support_data_tiled = support_data.unsqueeze(1).repeat(1, num_queries, 1, 1) # batch_size x num_queries x num_support x featdim
-                support_data_tiled = support_data_tiled.view(tt.arg.test_batch_size * num_queries, num_supports, -1) # (batch_size x num_queries) x num_support x featdim
-                query_data_reshaped = query_data.contiguous().view(tt.arg.test_batch_size * num_queries, -1).unsqueeze(1) # (batch_size x num_queries) x 1 x featdim
-                input_node_feat = torch.cat([support_data_tiled, query_data_reshaped], 1) # (batch_size x num_queries) x (num_support + 1) x featdim
+                support_data = full_data[:, :num_supports]  # batch_size x num_support x featdim
+                query_data = full_data[:, num_supports:]  # batch_size x num_query x featdim
+                support_data_tiled = support_data.unsqueeze(1).repeat(1, num_queries, 1,
+                                                                      1)  # batch_size x num_queries x num_support x featdim
+                support_data_tiled = support_data_tiled.view(tt.arg.test_batch_size * num_queries, num_supports,
+                                                             -1)  # (batch_size x num_queries) x num_support x featdim
+                query_data_reshaped = query_data.contiguous().view(tt.arg.test_batch_size * num_queries, -1).unsqueeze(
+                    1)  # (batch_size x num_queries) x 1 x featdim
+                input_node_feat = torch.cat([support_data_tiled, query_data_reshaped],
+                                            1)  # (batch_size x num_queries) x (num_support + 1) x featdim
 
-                input_edge_feat = 0.5 * torch.ones(tt.arg.test_batch_size, 2, num_supports + 1, num_supports + 1).to(tt.arg.device)  # batch_size x 2 x (num_support + 1) x (num_support + 1)
+                input_edge_feat = 0.5 * torch.ones(tt.arg.test_batch_size, 2, num_supports + 1, num_supports + 1).to(
+                    tt.arg.device)  # batch_size x 2 x (num_support + 1) x (num_support + 1)
 
-                input_edge_feat[:, :, :num_supports, :num_supports] = init_edge[:, :, :num_supports, :num_supports]  # batch_size x 2 x (num_support + 1) x (num_support + 1)
-                input_edge_feat = input_edge_feat.repeat(num_queries, 1, 1, 1)  # (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
+                input_edge_feat[:, :, :num_supports, :num_supports] = init_edge[:, :, :num_supports,
+                                                                      :num_supports]  # batch_size x 2 x (num_support + 1) x (num_support + 1)
+                input_edge_feat = input_edge_feat.repeat(num_queries, 1, 1,
+                                                         1)  # (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
 
                 # logit: (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
                 logit = self.gnn_module(node_feat=input_node_feat, edge_feat=input_edge_feat)[-1]
@@ -291,25 +367,35 @@ class ModelTrainer(object):
                 # batch_size x num_queries x 2 x (num_support + 1) x (num_support + 1)
                 # logit --> full_logit (batch_size x 2 x num_samples x num_samples)
                 full_logit[:, :, :num_supports, :num_supports] = logit[:, :, :, :num_supports, :num_supports].mean(1)
-                full_logit[:, :, :num_supports, num_supports:] = logit[:, :, :, :num_supports, -1].transpose(1, 2).transpose(2, 3)
+                full_logit[:, :, :num_supports, num_supports:] = logit[:, :, :, :num_supports, -1].transpose(1,
+                                                                                                             2).transpose(
+                    2, 3)
                 full_logit[:, :, num_supports:, :num_supports] = logit[:, :, :, -1, :num_supports].transpose(1, 2)
 
             # (4) compute loss
-            full_edge_loss = self.edge_loss(1-full_logit[:, 0], 1-full_edge[:, 0])
+            full_edge_loss = self.edge_loss(1 - full_logit[:, 0], 1 - full_edge[:, 0])
 
-            query_edge_loss =  torch.sum(full_edge_loss * query_edge_mask * evaluation_mask) / torch.sum(query_edge_mask * evaluation_mask)
+            query_edge_loss = torch.sum(full_edge_loss * query_edge_mask * evaluation_mask) / torch.sum(
+                query_edge_mask * evaluation_mask)
 
             # weighted loss for balancing pos/neg
-            pos_query_edge_loss = torch.sum(full_edge_loss * query_edge_mask * full_edge[:, 0] * evaluation_mask) / torch.sum(query_edge_mask * full_edge[:, 0] * evaluation_mask)
-            neg_query_edge_loss = torch.sum(full_edge_loss * query_edge_mask * (1-full_edge[:, 0]) * evaluation_mask) / torch.sum(query_edge_mask * (1-full_edge[:, 0]) * evaluation_mask)
+            pos_query_edge_loss = torch.sum(
+                full_edge_loss * query_edge_mask * full_edge[:, 0] * evaluation_mask) / torch.sum(
+                query_edge_mask * full_edge[:, 0] * evaluation_mask)
+            neg_query_edge_loss = torch.sum(
+                full_edge_loss * query_edge_mask * (1 - full_edge[:, 0]) * evaluation_mask) / torch.sum(
+                query_edge_mask * (1 - full_edge[:, 0]) * evaluation_mask)
             query_edge_loss = pos_query_edge_loss + neg_query_edge_loss
 
             # compute accuracy
-            full_edge_accr = self.hit(full_logit, 1-full_edge[:, 0].long())
-            query_edge_accr = torch.sum(full_edge_accr * query_edge_mask * evaluation_mask) / torch.sum(query_edge_mask * evaluation_mask)
+            full_edge_accr = self.hit(full_logit, 1 - full_edge[:, 0].long())
+            query_edge_accr = torch.sum(full_edge_accr * query_edge_mask * evaluation_mask) / torch.sum(
+                query_edge_mask * evaluation_mask)
 
             # compute node accuracy (num_tasks x num_quries x num_ways)
-            query_node_pred = torch.bmm(full_logit[:, 0, num_supports:, :num_supports], self.one_hot_encode(tt.arg.num_ways_test, support_label.long())) # (num_tasks x num_quries x num_supports) * (num_tasks x num_supports x num_ways)
+            query_node_pred = torch.bmm(full_logit[:, 0, num_supports:, :num_supports],
+                                        self.one_hot_encode(tt.arg.num_ways_test,
+                                                            support_label.long()))  # (num_tasks x num_quries x num_supports) * (num_tasks x num_supports x num_ways)
             query_node_accr = torch.eq(torch.max(query_node_pred, -1)[1], query_label.long()).float().mean()
 
             query_edge_losses += [query_edge_loss.item()]
@@ -369,6 +455,7 @@ class ModelTrainer(object):
             shutil.copyfile('asset/checkpoints/{}/'.format(tt.arg.experiment) + 'checkpoint.pth.tar',
                             'asset/checkpoints/{}/'.format(tt.arg.experiment) + 'model_best.pth.tar')
 
+
 def set_exp_name():
     exp_name = 'D-{}'.format(tt.arg.dataset)
     exp_name += '_N-{}_K-{}_U-{}'.format(tt.arg.num_ways, tt.arg.num_shots, tt.arg.num_unlabeled)
@@ -378,8 +465,8 @@ def set_exp_name():
 
     return exp_name
 
-if __name__ == '__main__':
 
+if __name__ == '__main__':
     tt.arg.device = 'cuda:0' if tt.arg.device is None else tt.arg.device
     # replace dataset_root with your own
     tt.arg.dataset_root = '/data/private/dataset'
@@ -424,7 +511,7 @@ if __name__ == '__main__':
 
     print(set_exp_name())
 
-    #set random seed
+    # set random seed
     np.random.seed(tt.arg.seed)
     torch.manual_seed(tt.arg.seed)
     torch.cuda.manual_seed_all(tt.arg.seed)
@@ -439,7 +526,6 @@ if __name__ == '__main__':
         os.makedirs('asset/checkpoints')
     if not os.path.exists('asset/checkpoints/' + tt.arg.experiment):
         os.makedirs('asset/checkpoints/' + tt.arg.experiment)
-
 
     enc_module = EmbeddingImagenet(emb_size=tt.arg.emb_size)
 

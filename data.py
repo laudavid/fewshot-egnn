@@ -50,9 +50,8 @@ class MiniImagenetLoader(data.Dataset):
                 # resize
                 image_data = pil_image.fromarray(np.uint8(data[c_idx][i_idx]))
                 image_data = image_data.resize((self.data_size[2], self.data_size[1]))
-                #image_data = np.array(image_data, dtype='float32')
-
-                #image_data = np.transpose(image_data, (2, 0, 1))
+                # image_data = np.array(image_data, dtype='float32')
+                # image_data = np.transpose(image_data, (2, 0, 1))
 
                 # save
                 data[c_idx][i_idx] = image_data
@@ -98,7 +97,6 @@ class MiniImagenetLoader(data.Dataset):
                 # sample data for support and query (num_shots + num_queries)
                 class_data_list = random.sample(self.data[task_class_list[c_idx]], num_shots + num_queries)
 
-
                 # load sample for support set
                 for i_idx in range(num_shots):
                     # set data
@@ -119,12 +117,11 @@ class MiniImagenetLoader(data.Dataset):
         return [support_data, support_label, query_data, query_label]
 
 
-
 class TieredImagenetLoader(data.Dataset):
     def __init__(self, root, partition='train'):
         self.root = root
         self.partition = partition  # train/val/test
-        #self.preprocess()
+        # self.preprocess()
         self.data_size = [3, 84, 84]
 
         # load data
@@ -135,7 +132,6 @@ class TieredImagenetLoader(data.Dataset):
         #     if self.check_decompress():
         #         self._decompress_()
         #     self._preprocess_()
-
 
     def get_image_paths(self, file):
         images_path, class_names = [], []
@@ -230,8 +226,6 @@ class TieredImagenetLoader(data.Dataset):
             partition_count = partition_count + 1
             with open(os.path.join(self.root, 'tiered-imagenet/compacted_datasets', 'tiered_imagenet_val_{}.pickle'.format(partition_count)), 'wb') as handle:
                 pickle.dump(item, handle, protocol=2)
-
-
 
         label_encoder = {}
         keys = list(train_set.keys()) + list(test_set.keys())
