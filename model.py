@@ -115,23 +115,23 @@ class EmbeddingImagenet(nn.Module):
         # self.layer_last = nn.Sequential(nn.Linear(in_features=self.last_hidden * 4,
         #                                       out_features=self.emb_size, bias=True),
         #                                 nn.BatchNorm1d(self.emb_size))
-
+        self.pool_1 = nn.MaxPool2d(kernel_size=5)
         self.gc_1 = GraphConvolution(self.hidden * 4, self.hidden * 4)
         # self.gc_2 = GraphConvolution(self.hidden * 4, self.hidden * 4)
 
-        self.conv_5 = nn.Sequential(nn.Conv2d(in_channels=self.hidden*4,  # 256
-                                              out_channels=self.hidden,  # 64
+        self.conv_5 = nn.Sequential(nn.Conv2d(in_channels=256,  # 256
+                                              out_channels=64,  # 64
                                               kernel_size=1,
                                               bias=False),
-                                    nn.BatchNorm1d(num_features=self.hidden),
+                                    nn.BatchNorm2d(num_features=64),
                                     nn.LeakyReLU(negative_slope=0.2, inplace=True))
-        self.conv_6 = nn.Sequential(nn.Conv2d(in_channels=self.hidden,  # 64
-                                              out_channels=self.hidden // 4,  # 16
+        self.conv_6 = nn.Sequential(nn.Conv2d(in_channels=64,  # 64
+                                              out_channels=16,  # 16
                                               kernel_size=1,
                                               bias=False),
-                                    nn.BatchNorm2d(num_features=self.hidden//4),
+                                    nn.BatchNorm2d(num_features=16),
                                     nn.LeakyReLU(negative_slope=0.2, inplace=True))
-        self.conv_7 = nn.Sequential(nn.Conv2d(in_channels=self.hidden // 4,  # 16
+        self.conv_7 = nn.Sequential(nn.Conv2d(in_channels=16,  # 16
                                               out_channels=1,  # 1
                                               kernel_size=1,
                                               bias=False))
@@ -141,14 +141,18 @@ class EmbeddingImagenet(nn.Module):
     def forward(self, input_data, adj):
         # input data: num_samples x 3 x 84 x 84
         # adj: num_samples x num_samples
+        # print('input_data.size: ', input_data.size())
         output_data = self.conv_4(self.conv_3(self.conv_2(self.conv_1(input_data))))  # num_samples * 256 * 5 * 5
+        # print('output_data.size: ', output_data.size())
         output_data_1 = self.pool_1(output_data)  # num_samples * 256 * 1 * 1
         output_data_2 = F.normalize(output_data_1.view(output_data_1.size(0), -1), p=1, dim=1)
         output_data_3 = F.relu(self.gc_1(output_data_2, adj))  # num_samples * 256
         output_data = output_data * output_data_3.unsqueeze(-1).unsqueeze(-1).repeat(
             1, 1, output_data.size(2), output_data.size(3))
+        # print('output_data.size: ', output_data.size())
         output_data = self.conv_7(self.conv_6(self.conv_5(output_data))).squeeze(1)
-
+        # print('output_data.size: ', output_data.size())
+        output_data = output_data.view(output_data.size(0),-1)
         return output_data  # num_samples * 5 * 5
 
 

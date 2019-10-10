@@ -6,11 +6,12 @@ import os
 import random
 
 # import seaborn as sns
+os.environ["CUDA_VISIBLE_DEVICES"] = "6"
 
 
 def normalize(adj, symmetric=True):
     # A = A+I
-    new_adj = adj + torch.eye(adj.size(0))
+    new_adj = adj + torch.eye(adj.size(0)).to(tt.arg.device)
     # 所有节点的度
     degree = new_adj.sum(1)
     if symmetric:
@@ -467,15 +468,15 @@ def set_exp_name():
 
 
 if __name__ == '__main__':
-    tt.arg.device = 'cuda:0' if tt.arg.device is None else tt.arg.device
+    tt.arg.device = 'cuda:6' if tt.arg.device is None else tt.arg.device
     # replace dataset_root with your own
-    tt.arg.dataset_root = '/data/private/dataset'
+    tt.arg.dataset_root = '/home/dsg/liuwei/dataset'
     tt.arg.dataset = 'mini' if tt.arg.dataset is None else tt.arg.dataset
     tt.arg.num_ways = 5 if tt.arg.num_ways is None else tt.arg.num_ways
     tt.arg.num_shots = 1 if tt.arg.num_shots is None else tt.arg.num_shots
     tt.arg.num_unlabeled = 0 if tt.arg.num_unlabeled is None else tt.arg.num_unlabeled
     tt.arg.num_layers = 3 if tt.arg.num_layers is None else tt.arg.num_layers
-    tt.arg.meta_batch_size = 40 if tt.arg.meta_batch_size is None else tt.arg.meta_batch_size
+    tt.arg.meta_batch_size = 10 if tt.arg.meta_batch_size is None else tt.arg.meta_batch_size
     tt.arg.transductive = False if tt.arg.transductive is None else tt.arg.transductive
     tt.arg.seed = 222 if tt.arg.seed is None else tt.arg.seed
     tt.arg.num_gpus = 1 if tt.arg.num_gpus is None else tt.arg.num_gpus
@@ -490,9 +491,9 @@ if __name__ == '__main__':
     tt.arg.test_transductive = tt.arg.transductive
 
     # model parameter related
-    tt.arg.num_edge_features = 96
-    tt.arg.num_node_features = 96
-    tt.arg.emb_size = 128
+    tt.arg.num_edge_features = 25
+    tt.arg.num_node_features = 25
+    tt.arg.emb_size = 25
 
     # train, test parameters
     tt.arg.train_iteration = 100000 if tt.arg.dataset == 'mini' else 200000
