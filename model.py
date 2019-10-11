@@ -131,7 +131,13 @@ class EmbeddingImagenet(nn.Module):
                                               bias=False),
                                     nn.BatchNorm2d(num_features=16),
                                     nn.LeakyReLU(negative_slope=0.2, inplace=True))
-        self.conv_7 = nn.Sequential(nn.Conv2d(in_channels=16,  # 16
+        self.conv_7 = nn.Sequential(nn.Conv2d(in_channels=16,  # 64
+                                              out_channels=3,  # 16
+                                              kernel_size=1,
+                                              bias=False),
+                                    nn.BatchNorm2d(num_features=3),
+                                    nn.LeakyReLU(negative_slope=0.2, inplace=True))
+        self.conv_8 = nn.Sequential(nn.Conv2d(in_channels=3,  # 16
                                               out_channels=1,  # 1
                                               kernel_size=1,
                                               bias=False))
@@ -150,7 +156,7 @@ class EmbeddingImagenet(nn.Module):
         output_data = output_data * output_data_3.unsqueeze(-1).unsqueeze(-1).repeat(
             1, 1, output_data.size(2), output_data.size(3))
         # print('output_data.size: ', output_data.size())
-        output_data = self.conv_7(self.conv_6(self.conv_5(output_data))).squeeze(1)
+        output_data = self.conv_8(self.conv_7(self.conv_6(self.conv_5(output_data)))).squeeze(1)
         # print('output_data.size: ', output_data.size())
         output_data = output_data.view(output_data.size(0),-1)
         return output_data  # num_samples * 5 * 5
