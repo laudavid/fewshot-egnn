@@ -273,10 +273,12 @@ class ModelTrainer(object):
         num_supports = tt.arg.num_ways_test * tt.arg.num_shots_test
         num_queries = tt.arg.num_ways_test * 1
         num_samples = num_supports + num_queries
+
         support_edge_mask = torch.zeros(tt.arg.test_batch_size, num_samples, num_samples).to(tt.arg.device)
         support_edge_mask[:, :num_supports, :num_supports] = 1
         query_edge_mask = 1 - support_edge_mask
         evaluation_mask = torch.ones(tt.arg.test_batch_size, num_samples, num_samples).to(tt.arg.device)
+
         # for semi-supervised setting, ignore unlabeled support sets for evaluation
         for c in range(tt.arg.num_ways_test):
             evaluation_mask[:,
@@ -321,13 +323,24 @@ class ModelTrainer(object):
                 init_edge[:, :, :num_supports,
                 ((c + 1) * tt.arg.num_shots_test - tt.arg.num_unlabeled):(c + 1) * tt.arg.num_shots_test] = 0.5
 
-            # set as train mode
+            # set as eval mode
             self.enc_module.eval()
             self.gnn_module.eval()
 
+            # # (1) encode data
+            # full_data = [self.enc_module(data.squeeze(1)) for data in full_data.chunk(full_data.size(1), dim=1)]
+            # full_data = torch.stack(full_data, dim=1)
+
             # (1) encode data
-            full_data = [self.enc_module(data.squeeze(1)) for data in full_data.chunk(full_data.size(1), dim=1)]
-            full_data = torch.stack(full_data, dim=1)
+            # enc_module input data.squeeze(1): num_samples x 3 x 84 x 84
+            # full_data = [self.enc_module(data.squeeze(1)) for data in full_data.chunk(full_data.size(1), dim=1)]
+            data_list = []
+            for i, data in enumerate(full_data.chunk(full_data.size(0), dim=0)):
+                adj = normalize(init_edge[i][0])
+                data_list.append(self.enc_module(data.squeeze(0), adj))
+            
+            # batch_size x num_samples x featdim(node_feat_size: 5 x 5)
+            full_data = torch.stack(data_list, dim=0)
 
             # (2) predict edge logit (consider only the last layer logit, num_tasks x 2 x num_samples x num_samples)
             if tt.arg.test_transductive:
@@ -476,7 +489,7 @@ if __name__ == '__main__':
     tt.arg.num_shots = 1 if tt.arg.num_shots is None else tt.arg.num_shots
     tt.arg.num_unlabeled = 0 if tt.arg.num_unlabeled is None else tt.arg.num_unlabeled
     tt.arg.num_layers = 3 if tt.arg.num_layers is None else tt.arg.num_layers
-    tt.arg.meta_batch_size = 10 if tt.arg.meta_batch_size is None else tt.arg.meta_batch_size
+    tt.arg.meta_batch_size = 40 if tt.arg.meta_batch_size is None else tt.arg.meta_batch_size
     tt.arg.transductive = False if tt.arg.transductive is None else tt.arg.transductive
     tt.arg.seed = 222 if tt.arg.seed is None else tt.arg.seed
     tt.arg.num_gpus = 1 if tt.arg.num_gpus is None else tt.arg.num_gpus
