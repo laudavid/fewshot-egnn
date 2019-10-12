@@ -483,7 +483,7 @@ def set_exp_name():
 if __name__ == '__main__':
     tt.arg.device = 'cuda:6' if tt.arg.device is None else tt.arg.device
     # replace dataset_root with your own
-    tt.arg.dataset_root = '/home/dsg/liuwei/dataset'
+    tt.arg.dataset_root = '/media/dsg3/liuwei'
     tt.arg.dataset = 'mini' if tt.arg.dataset is None else tt.arg.dataset
     tt.arg.num_ways = 5 if tt.arg.num_ways is None else tt.arg.num_ways
     tt.arg.num_shots = 1 if tt.arg.num_shots is None else tt.arg.num_shots

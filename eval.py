@@ -26,7 +26,7 @@ if __name__ == '__main__':
     ####################
     tt.arg.device = 'cuda:0' if tt.arg.device is None else tt.arg.device
     # replace dataset_root with your own
-    tt.arg.dataset_root = '/data/private/dataset'
+    tt.arg.dataset_root = '/media/dsg3/liuwei'
     tt.arg.dataset = 'mini' if tt.arg.dataset is None else tt.arg.dataset
     tt.arg.num_ways = 5 if tt.arg.num_ways is None else tt.arg.num_ways
     tt.arg.num_shots = 1 if tt.arg.num_shots is None else tt.arg.num_shots
@@ -56,7 +56,7 @@ if __name__ == '__main__':
     tt.arg.test_iteration = 10000
     tt.arg.test_interval = 5000
     tt.arg.test_batch_size = 10
-    tt.arg.log_step = 1000
+    tt.arg.log_step = 100
 
     tt.arg.lr = 1e-3
     tt.arg.grad_clip = 5
@@ -136,8 +136,3 @@ if __name__ == '__main__':
 
 
     tester.eval(partition='test')
-
-
-
-
-
