@@ -513,7 +513,7 @@ if __name__ == '__main__':
     tt.arg.test_iteration = 10000
     tt.arg.test_interval = 5000 if tt.arg.test_interval is None else tt.arg.test_interval
     tt.arg.test_batch_size = 10
-    tt.arg.log_step = 1000 if tt.arg.log_step is None else tt.arg.log_step
+    tt.arg.log_step = 100 if tt.arg.log_step is None else tt.arg.log_step
 
     tt.arg.lr = 1e-3
     tt.arg.grad_clip = 5
