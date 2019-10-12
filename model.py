@@ -140,9 +140,9 @@ class EmbeddingImagenet(nn.Module):
         self.conv_8 = nn.Sequential(nn.Conv2d(in_channels=3,  # 16
                                               out_channels=1,  # 1
                                               kernel_size=1,
-                                              bias=False))
-        # nn.BatchNorm2d(num_features=self.hidden/64),
-        # nn.LeakyReLU(negative_slope=0.2, inplace=True))
+                                              bias=False),
+                                    nn.BatchNorm2d(num_features=1),
+                                    nn.LeakyReLU(negative_slope=0.2, inplace=True))
 
     def forward(self, input_data, adj):
         # input data: num_samples x 3 x 84 x 84
