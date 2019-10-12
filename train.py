@@ -486,10 +486,10 @@ if __name__ == '__main__':
     tt.arg.dataset_root = '/media/dsg3/liuwei'
     tt.arg.dataset = 'mini' if tt.arg.dataset is None else tt.arg.dataset
     tt.arg.num_ways = 5 if tt.arg.num_ways is None else tt.arg.num_ways
-    tt.arg.num_shots = 1 if tt.arg.num_shots is None else tt.arg.num_shots
+    tt.arg.num_shots = 5 if tt.arg.num_shots is None else tt.arg.num_shots
     tt.arg.num_unlabeled = 0 if tt.arg.num_unlabeled is None else tt.arg.num_unlabeled
     tt.arg.num_layers = 3 if tt.arg.num_layers is None else tt.arg.num_layers
-    tt.arg.meta_batch_size = 40 if tt.arg.meta_batch_size is None else tt.arg.meta_batch_size
+    tt.arg.meta_batch_size = 20 if tt.arg.meta_batch_size is None else tt.arg.meta_batch_size
     tt.arg.transductive = False if tt.arg.transductive is None else tt.arg.transductive
     tt.arg.seed = 222 if tt.arg.seed is None else tt.arg.seed
     tt.arg.num_gpus = 1 if tt.arg.num_gpus is None else tt.arg.num_gpus
