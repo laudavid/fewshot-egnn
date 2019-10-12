@@ -143,14 +143,16 @@ class ModelTrainer(object):
 
             # (2) predict edge logit (consider only the last layer logit, num_tasks x 2 x num_samples x num_samples)
             if tt.arg.train_transductive:
+                # num_layers x num_tasks x 2 x num_samples x num_samples
                 full_logit_layers = self.gnn_module(node_feat=full_data, edge_feat=init_edge)
             else:
                 # ignore query-query edges, since it is non-transductive setting
                 evaluation_mask[:, num_supports:, num_supports:] = 0
-                # input_node_feat: (batch_size x num_queries) x (num_support + 1) x featdim
-                # input_edge_feat: (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
-                support_data = full_data[:, :num_supports]  # batch_size x num_support x featdim
-                query_data = full_data[:, num_supports:]  # batch_size x num_query x featdim
+                
+                # batch_size x num_support x featdim
+                support_data = full_data[:, :num_supports]
+                # batch_size x num_query x featdim
+                query_data = full_data[:, num_supports:]
                 # batch_size x num_queries x num_support x featdim
                 support_data_tiled = support_data.unsqueeze(1).repeat(1, num_queries, 1, 1)
                 # (batch_size x num_queries) x num_support x featdim
@@ -168,9 +170,12 @@ class ModelTrainer(object):
                 # (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
                 input_edge_feat = input_edge_feat.repeat(num_queries, 1, 1, 1)
 
-                # logit: (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
+                # input_node_feat: (batch_size x num_queries) x (num_support + 1) x featdim
+                # input_edge_feat: (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
+                # logit: n_layers x (batch_size x num_queries) x 2 x (num_support + 1) x (num_support + 1)
                 logit_layers = self.gnn_module(node_feat=input_node_feat, edge_feat=input_edge_feat)
 
+                # logit: n_layers x batch_size x num_queries x 2 x (num_support + 1) x (num_support + 1)
                 logit_layers = [
                     logit_layer.view(tt.arg.meta_batch_size, num_queries, 2, num_supports + 1, num_supports + 1) for
                     logit_layer in logit_layers]
@@ -515,7 +520,7 @@ if __name__ == '__main__':
     tt.arg.test_batch_size = 10
     tt.arg.log_step = 100 if tt.arg.log_step is None else tt.arg.log_step
 
-    tt.arg.lr = 1e-3
+    tt.arg.lr = 1e-3 if tt.arg.lr is None else tt.arg.lr
     tt.arg.grad_clip = 5
     tt.arg.weight_decay = 1e-6
     tt.arg.dec_lr = 15000 if tt.arg.dataset == 'mini' else 30000
