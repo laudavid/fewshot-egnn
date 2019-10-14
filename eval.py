@@ -8,7 +8,7 @@ from train import ModelTrainer
 
 if __name__ == '__main__':
 
-    tt.arg.test_model = 'D-mini_N-5_K-1_U-0_L-3_B-40_T-True' if tt.arg.test_model is None else tt.arg.test_model
+    tt.arg.test_model = 'D-mini_N-5_K-5_U-0_L-3_B-20_T-True_SEED-222' if tt.arg.test_model is None else tt.arg.test_model
 
     list1 = tt.arg.test_model.split("_")
     param = {}
@@ -29,10 +29,10 @@ if __name__ == '__main__':
     tt.arg.dataset_root = '/media/dsg3/liuwei'
     tt.arg.dataset = 'mini' if tt.arg.dataset is None else tt.arg.dataset
     tt.arg.num_ways = 5 if tt.arg.num_ways is None else tt.arg.num_ways
-    tt.arg.num_shots = 1 if tt.arg.num_shots is None else tt.arg.num_shots
+    tt.arg.num_shots = 5 if tt.arg.num_shots is None else tt.arg.num_shots
     tt.arg.num_unlabeled = 0 if tt.arg.num_unlabeled is None else tt.arg.num_unlabeled
     tt.arg.num_layers = 3 if tt.arg.num_layers is None else tt.arg.num_layers
-    tt.arg.meta_batch_size = 40 if tt.arg.meta_batch_size is None else tt.arg.meta_batch_size
+    tt.arg.meta_batch_size = 20 if tt.arg.meta_batch_size is None else tt.arg.meta_batch_size
     tt.arg.transductive = False if tt.arg.transductive is None else tt.arg.transductive
     tt.arg.seed = 222 if tt.arg.seed is None else tt.arg.seed
     tt.arg.num_gpus = 1 if tt.arg.num_gpus is None else tt.arg.num_gpus
@@ -47,9 +47,9 @@ if __name__ == '__main__':
     tt.arg.test_transductive = tt.arg.transductive
 
     # model parameter related
-    tt.arg.num_edge_features = 96
-    tt.arg.num_node_features = 96
-    tt.arg.emb_size = 128
+    tt.arg.num_edge_features = 25
+    tt.arg.num_node_features = 25
+    tt.arg.emb_size = 25
 
     # train, test parameters
     tt.arg.train_iteration = 100000 if tt.arg.dataset == 'mini' else 200000
@@ -118,8 +118,8 @@ if __name__ == '__main__':
                            data_loader=data_loader)
 
 
-    #checkpoint = torch.load('asset/checkpoints/{}/'.format(exp_name) + 'model_best.pth.tar')
-    checkpoint = torch.load('./trained_models/{}/'.format(exp_name) + 'model_best.pth.tar')
+    checkpoint = torch.load('/home/dsg/liuwei/fewshot-egnn/asset/checkpoints/{}_SEED-222/'.format(exp_name) + 'model_best.pth.tar')
+    # checkpoint = torch.load('./trained_models/{}/'.format(exp_name) + 'model_best.pth.tar')
 
 
     tester.enc_module.load_state_dict(checkpoint['enc_module_state_dict'])

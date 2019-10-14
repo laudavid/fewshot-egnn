@@ -117,7 +117,7 @@ class EmbeddingImagenet(nn.Module):
         #                                 nn.BatchNorm1d(self.emb_size))
         self.pool_1 = nn.MaxPool2d(kernel_size=5)
         self.gc_1 = GraphConvolution(self.hidden * 4, self.hidden * 4)
-        # self.gc_2 = GraphConvolution(self.hidden * 4, self.hidden * 4)
+        self.gc_2 = GraphConvolution(self.hidden * 4, self.hidden * 4)
 
         self.conv_5 = nn.Sequential(nn.Conv2d(in_channels=256,  # 256
                                               out_channels=64,  # 64
@@ -150,9 +150,12 @@ class EmbeddingImagenet(nn.Module):
         # print('input_data.size: ', input_data.size())
         output_data = self.conv_4(self.conv_3(self.conv_2(self.conv_1(input_data))))  # num_samples * 256 * 5 * 5
         # print('output_data.size: ', output_data.size())
+
         output_data_1 = self.pool_1(output_data)  # num_samples * 256 * 1 * 1
         output_data_2 = F.normalize(output_data_1.view(output_data_1.size(0), -1), p=1, dim=1)
-        output_data_3 = F.relu(self.gc_1(output_data_2, adj))  # num_samples * 256
+
+        # output_data_3 = F.relu(self.gc_1(output_data_2, adj))  # num_samples * 256
+        output_data_3 = F.relu(self.gc_2(F.relu(self.gc_1(output_data_2, adj)), adj))  # num_samples * 256
         output_data = output_data * output_data_3.unsqueeze(-1).unsqueeze(-1).repeat(
             1, 1, output_data.size(2), output_data.size(3))
         # print('output_data.size: ', output_data.size())
